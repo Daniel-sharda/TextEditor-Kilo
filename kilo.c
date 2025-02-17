@@ -1,36 +1,50 @@
 /*** Includes***/
+#include <asm-generic/ioctls.h>
 #include <ctype.h> //función iscntrl()
-#include <stdio.h> //funcion printf(), perror()
+#include <stdio.h> //funcion printf(), perror(), sscanf()
 #include <stdlib.h> // funcion atexit(), exit()
 #include <termios.h> // todo relacionado con RawMode.
 #include <unistd.h> // funcion read() exclusiva de UNIX
 #include <errno.h>
+#include <sys/ioctl.h> //para determinar el tamaño de la terminal
+
+
+/*** definies ***/
+#define CTRL_KEY(k) ((k) & 0x1f)//Transforma la letra k a cntrl+k (la tecla control quita los bits en las posiciones 5 y 6)
 
 
 /*** data ***/
-struct termios orig_termios;
+struct editorConfig {
+  int screenRows;
+  int screenCols;
+  struct termios orig_termios;
+};
 
+struct editorConfig E;
 
 
 /*** terminal  ***/
 void die(const char *s)
 {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
   perror(s);//mira el numero de error para determinar el tipo de error y muestra un numero de error descriptivo
   exit(1);//termina la ejecucion del programa
 }
 
 
 void disableRawMode() {
-  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios)==-1) die("tcsetattr"); //TCSAFLUSH descarta todos los inputs antes de aplicar los cambios (a la terminal)
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios)==-1) die("tcsetattr"); //TCSAFLUSH descarta todos los inputs antes de aplicar los cambios (a la terminal)
 }
 
 
 void enableRawMode() {
-  if(tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("tcgetattr");
+  if(tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("tcgetattr");
   atexit(disableRawMode);
 
   struct termios raw;
-  raw = orig_termios;
+  raw = E.orig_termios;
 
   raw.c_iflag &= ~(IXON | ICRNL); //IXON desactiva cntrl-s y cntrl-q que desactiva y reactiva la entrada de inputs a la terminal (XON y XOFF)
   //ICRNL hace que '\r' (cntrl-m) no se convierta en '\n' (cntrl-j)
@@ -55,22 +69,101 @@ void enableRawMode() {
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
+char editorReadKey() {
+  int nread;
+  char c;
+  while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
+    if (nread == -1 && errno != EAGAIN) die("read");//Para dar soporte a CYGWIN ya que lanza un error indebido y pone marca EAGAIN
+  }
+  return c;
+}
 
 
+int getCursorPosition(int *rows, int *cols) {
+  char buf[32];
+  unsigned int i = 0;
+
+  if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;//Se utiliza para pedir la posición del cursor. (n se utiliza para pedir información a la terminal y 6 es el cursor)
+
+  while(i<sizeof(buf)-1) {
+    if(read(STDIN_FILENO, &buf[i], 1) != 1) break;
+    if(buf[i] == 'R') break;
+    i++;
+  }
+  buf[i]='\0';
+
+  if (buf[0]!='\x1b' || buf[1] != '[') return -1;
+  if(sscanf(&buf[2], "%d;%d", rows, cols ) != 2) return -1;
+
+  return 0;
+}
+
+
+
+
+int getWindowSize(int *rows, int *cols) {
+  struct winsize ws;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col==0) {
+    if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1; //C y B previenen que el cursor se salga de la pantalla, frente a x;yH
+    return getCursorPosition(rows, cols);
+  } else {
+    *rows = ws.ws_row;
+    *cols = ws.ws_col;
+    return 0;
+  }
+}
+
+
+
+/*** input ***/
+
+void editorProcessKeypress() {
+  char c = editorReadKey();
+
+  switch (c) {
+    case CTRL_KEY('q'):
+      write(STDOUT_FILENO, "\x1b[2J", 4);//Borra toda la pantalla
+      write(STDOUT_FILENO, "\x1b[H", 3);//Coloca el cursor al inicio
+      exit(0);
+      break;
+  }
+}
+
+
+
+/*** output ***/
+void editorDrawRaws() {
+  int y;
+  for (y=0; y<E.screenRows; y++) {
+    write(STDOUT_FILENO, "~\r\n", 3);
+  }
+}
+
+
+void editorRefreshScreen() {
+  write(STDOUT_FILENO, "\x1b[2J", 4);//"\x1b" indica el caracter ESC "\x" indica que se va a escribir un bit Hexadecimal (1b)
+  //Con <ESC> + [ indicamos a la terminal de hacer varias funciones de formateo. (Usando el estandar VT100). Con J le indicamos que borre la pantalla y con 2 por delante y detrás del cursor. (0 sería delante hasta fin y 1 incio hasta cursor).
+  write(STDOUT_FILENO, "\x1b[H", 3); //Con este le indicamos que coloque el cursor al inicio. (default: 1,1). ("[12;27H" sería fila 12 columna 27).
+
+  editorDrawRaws();
+
+  write(STDOUT_FILENO, "\x1b[H", 3);
+}
 
 
 /*** init ***/
+void initEditor() {
+  if(getWindowSize(&E.screenRows, &E.screenCols) == -1) die("getWindowSize");
+}
+
+
 int main(void) {
   enableRawMode();
+  initEditor();
+
   while (1) {
-    char c;
-    if (read(STDIN_FILENO, &c, 1) == -1 && errno!=EAGAIN) die("read");//Para dar soporte a CYGWIN
-    if (iscntrl(c)) {
-      printf("%d\r\n", c);
-    } else {
-      printf("%d ('%c')\r\n", c, c);
-    }
-    if (c == 'q') break;
+    editorRefreshScreen();
+    editorProcessKeypress();
   }
   return 0;
 }
