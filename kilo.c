@@ -2,11 +2,12 @@
 #include <asm-generic/ioctls.h>
 #include <ctype.h> //función iscntrl()
 #include <stdio.h> //funcion printf(), perror(), sscanf()
-#include <stdlib.h> // funcion atexit(), exit()
+#include <stdlib.h> // funcion atexit(), exit(), free(), realloc()
 #include <termios.h> // todo relacionado con RawMode.
 #include <unistd.h> // funcion read() exclusiva de UNIX
 #include <errno.h>
 #include <sys/ioctl.h> //para determinar el tamaño de la terminal
+#include <string.h> //función memcpy()
 
 
 /*** definies ***/
@@ -114,6 +115,30 @@ int getWindowSize(int *rows, int *cols) {
 }
 
 
+/*** append buffer ***/
+struct abuf {
+  char *b;
+  int len;
+};
+
+#define ABUF_INIT = {NULL, 0};
+
+
+void abAppend(struct abuf *ab, const char *s, int len) {
+  char *new = realloc(  ab->b, ab->len + len);
+
+  if(new == NULL) return;//Si new==NULL no se ha podido alocar la memoria. Pero sigue existiendo el puntero ab.b(si se asigna valor a new entonces se borra ab.b)
+  memcpy(&new[ab->len], s, len);//añadimos la cadena s a la cadena abuf.b(justo al final en ab.b[len]). Cuidado con OVERFLOWS (escribir más alla de la memoria reservada para el string destino). Como hemos guardado con realloc memoria sabbemos que no nos sobrepasamos.
+  ab->b = new;
+  ab->len += len;
+}
+
+
+void abFree(struct abuf *ab) {
+  free(ab->b);
+}
+
+
 
 /*** input ***/
 
@@ -134,8 +159,11 @@ void editorProcessKeypress() {
 /*** output ***/
 void editorDrawRaws() {
   int y;
-  for (y=0; y<E.screenRows; y++) {
-    write(STDOUT_FILENO, "~\r\n", 3);
+  for (y=0;y<E.screenRows; y++) {
+    write(STDOUT_FILENO, "~", 1);
+    if (y < E.screenRows-1) {
+      write(STDOUT_FILENO, "\r\n", 2);
+    }
   }
 }
 
