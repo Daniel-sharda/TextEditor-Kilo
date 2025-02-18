@@ -121,7 +121,7 @@ struct abuf {
   int len;
 };
 
-#define ABUF_INIT = {NULL, 0};
+#define ABUF_INIT {NULL, 0};
 
 
 void abAppend(struct abuf *ab, const char *s, int len) {
@@ -157,25 +157,32 @@ void editorProcessKeypress() {
 
 
 /*** output ***/
-void editorDrawRaws() {
+void editorDrawRaws(struct abuf *ab) {
   int y;
   for (y=0;y<E.screenRows; y++) {
-    write(STDOUT_FILENO, "~", 1);
+    abAppend(ab, "~", 1);
     if (y < E.screenRows-1) {
       write(STDOUT_FILENO, "\r\n", 2);
+      abAppend(ab, "\r\n", 2);
     }
   }
 }
 
 
 void editorRefreshScreen() {
-  write(STDOUT_FILENO, "\x1b[2J", 4);//"\x1b" indica el caracter ESC "\x" indica que se va a escribir un bit Hexadecimal (1b)
+  struct abuf ab = ABUF_INIT;
+
+  abAppend(&ab, "\x1b[2J", 4);//"\x1b" indica el caracter ESC "\x" indica que se va a escribir un bit Hexadecimal (1b)
   //Con <ESC> + [ indicamos a la terminal de hacer varias funciones de formateo. (Usando el estandar VT100). Con J le indicamos que borre la pantalla y con 2 por delante y detrás del cursor. (0 sería delante hasta fin y 1 incio hasta cursor).
-  write(STDOUT_FILENO, "\x1b[H", 3); //Con este le indicamos que coloque el cursor al inicio. (default: 1,1). ("[12;27H" sería fila 12 columna 27).
+  abAppend(&ab, "\x1b[H", 3); //Con este le indicamos que coloque el cursor al inicio. (default: 1,1). ("[12;27H" sería fila 12 columna 27).
 
-  editorDrawRaws();
+  editorDrawRaws(&ab);
 
-  write(STDOUT_FILENO, "\x1b[H", 3);
+  abAppend(&ab, "\x1b[H", 3);
+
+  write(STDOUT_FILENO, ab.b, ab.len);
+
+  abFree(&ab);;
 }
 
 
