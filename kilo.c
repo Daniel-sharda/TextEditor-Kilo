@@ -1,21 +1,24 @@
 /*** Includes***/
 #include <asm-generic/ioctls.h>
 #include <ctype.h> //función iscntrl()
-#include <stdio.h> //funcion printf(), perror(), sscanf()
+#include <stdio.h> //funcion printf(), perror(), sscanf(), snprintf()
 #include <stdlib.h> // funcion atexit(), exit(), free(), realloc()
 #include <termios.h> // todo relacionado con RawMode.
 #include <unistd.h> // funcion read() exclusiva de UNIX
 #include <errno.h>
 #include <sys/ioctl.h> //para determinar el tamaño de la terminal
-#include <string.h> //función memcpy()
+#include <string.h> //función memcpy(), strlen()
 
 
 /*** definies ***/
 #define CTRL_KEY(k) ((k) & 0x1f)//Transforma la letra k a cntrl+k (la tecla control quita los bits en las posiciones 5 y 6)
 
+#define KILO_VERSION "0.0.1"
+
 
 /*** data ***/
 struct editorConfig {
+  int cx, cy; //Cursor position
   int screenRows;
   int screenCols;
   struct termios orig_termios;
@@ -128,7 +131,7 @@ void abAppend(struct abuf *ab, const char *s, int len) {
   char *new = realloc(  ab->b, ab->len + len);
 
   if(new == NULL) return;//Si new==NULL no se ha podido alocar la memoria. Pero sigue existiendo el puntero ab.b(si se asigna valor a new entonces se borra ab.b)
-  memcpy(&new[ab->len], s, len);//añadimos la cadena s a la cadena abuf.b(justo al final en ab.b[len]). Cuidado con OVERFLOWS (escribir más alla de la memoria reservada para el string destino). Como hemos guardado con realloc memoria sabbemos que no nos sobrepasamos.
+  memcpy(&new[ab->len], s, len);//añadimos la cadena s (len bytes si len es menor que sizeof(s) solo se copiara hasta ese byte)a la cadena abuf.b(justo al final en ab.b[ab.len]). Cuidado con OVERFLOWS (escribir más alla de la memoria reservada para el string destino). Como hemos guardado con realloc memoria sabbemos que no nos sobrepasamos.
   ab->b = new;
   ab->len += len;
 }
@@ -142,6 +145,23 @@ void abFree(struct abuf *ab) {
 
 /*** input ***/
 
+void editorMoveCursor(char c) {
+  switch (c) {
+    case 'a':
+      E.cx--;
+      break;
+    case 's':
+      E.cy++;
+      break;
+    case 'd':
+      E.cx++;
+      break;
+    case 'w':
+      E.cy--;
+      break;
+  }
+}
+
 void editorProcessKeypress() {
   char c = editorReadKey();
 
@@ -150,6 +170,13 @@ void editorProcessKeypress() {
       write(STDOUT_FILENO, "\x1b[2J", 4);//Borra toda la pantalla
       write(STDOUT_FILENO, "\x1b[H", 3);//Coloca el cursor al inicio
       exit(0);
+      break;
+
+    case 'a':
+    case 's':
+    case 'd':
+    case 'w':
+      editorMoveCursor(c);
       break;
   }
 }
@@ -160,7 +187,26 @@ void editorProcessKeypress() {
 void editorDrawRaws(struct abuf *ab) {
   int y;
   for (y=0;y<E.screenRows; y++) {
-    abAppend(ab, "~", 1);
+    if (y == E.screenRows / 3) {
+      char welcome[80];
+      int welcomelen = snprintf(welcome, sizeof(welcome), "KILO editor -- version %s", KILO_VERSION);
+      if (welcomelen > E.screenCols) welcomelen = E.screenCols;
+      
+      int padding = (E.screenCols - welcomelen) / 2;
+
+      if (padding) {
+        abAppend(ab, "~", 1);
+        padding--;
+      }
+      while (padding--) abAppend(ab, " ", 1);
+
+      abAppend(ab, welcome, welcomelen);
+    } else {
+      abAppend(ab, "~", 1);
+    }
+
+
+    abAppend(ab, "\x1b[K", 3);//Borra lo que esta a la derecha del cursor (opción 0 que es la default K=K0, K1 borra a la izquierda y K2 bora línea completa)
     if (y < E.screenRows-1) {
       write(STDOUT_FILENO, "\r\n", 2);
       abAppend(ab, "\r\n", 2);
@@ -172,13 +218,18 @@ void editorDrawRaws(struct abuf *ab) {
 void editorRefreshScreen() {
   struct abuf ab = ABUF_INIT;
 
-  abAppend(&ab, "\x1b[2J", 4);//"\x1b" indica el caracter ESC "\x" indica que se va a escribir un bit Hexadecimal (1b)
+  abAppend(&ab, "\x1b[?25l", 6);//?25 es la característica de que el cursor sea visible. l lo desactiva y h lo activa.
+  // abAppend(&ab, "\x1b[2J", 4);//"\x1b" indica el caracter ESC "\x" indica que se va a escribir un bit Hexadecimal (1b)
   //Con <ESC> + [ indicamos a la terminal de hacer varias funciones de formateo. (Usando el estandar VT100). Con J le indicamos que borre la pantalla y con 2 por delante y detrás del cursor. (0 sería delante hasta fin y 1 incio hasta cursor).
   abAppend(&ab, "\x1b[H", 3); //Con este le indicamos que coloque el cursor al inicio. (default: 1,1). ("[12;27H" sería fila 12 columna 27).
 
   editorDrawRaws(&ab);
 
-  abAppend(&ab, "\x1b[H", 3);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  abAppend(&ab, buf, strlen(buf)); //strlen() da la longitud de la cadena excluyendo el caracter nulo.
+
+  abAppend(&ab, "\x1b[?25h", 6);//?25 es la característica de que el cursor sea visible. l lo desactiva y h lo activa.
 
   write(STDOUT_FILENO, ab.b, ab.len);
 
@@ -188,6 +239,8 @@ void editorRefreshScreen() {
 
 /*** init ***/
 void initEditor() {
+  E.cx = 0;
+  E.cy = 0;
   if(getWindowSize(&E.screenRows, &E.screenCols) == -1) die("getWindowSize");
 }
 
