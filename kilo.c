@@ -10,10 +10,18 @@
 #include <string.h> //función memcpy(), strlen()
 
 
-/*** definies ***/
+/*** defines ***/
 #define CTRL_KEY(k) ((k) & 0x1f)//Transforma la letra k a cntrl+k (la tecla control quita los bits en las posiciones 5 y 6)
 
 #define KILO_VERSION "0.0.1"
+
+
+enum editorKey { //Al primero le asigna el valor 1000 al resto 1001, 1002, 10003...
+  ARROW_LEFT = 1000,
+  ARROW_RIGHT,
+  ARROW_UP,
+  ARROW_DOWN,
+};
 
 
 /*** data ***/
@@ -73,13 +81,33 @@ void enableRawMode() {
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
-char editorReadKey() {
+int editorReadKey() {
   int nread;
   char c;
   while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
     if (nread == -1 && errno != EAGAIN) die("read");//Para dar soporte a CYGWIN ya que lanza un error indebido y pone marca EAGAIN
   }
-  return c;
+
+  if (c=='\x1b') {
+    char seq[3];
+
+    if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+    if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+
+    if(seq[0] == '[') {
+      switch (seq[1]) {
+        case 'A': return ARROW_UP;
+        case 'B': return ARROW_DOWN;
+        case 'C': return ARROW_RIGHT;
+        case 'D': return ARROW_LEFT;
+      
+      }
+    }
+
+    return '\x1b';
+  } else {
+    return c;
+  }
 }
 
 
@@ -145,25 +173,25 @@ void abFree(struct abuf *ab) {
 
 /*** input ***/
 
-void editorMoveCursor(char c) {
+void editorMoveCursor(int c) {
   switch (c) {
-    case 'a':
+    case ARROW_LEFT:
       E.cx--;
       break;
-    case 's':
+    case ARROW_DOWN:
       E.cy++;
       break;
-    case 'd':
+    case ARROW_RIGHT:
       E.cx++;
       break;
-    case 'w':
+    case ARROW_UP:
       E.cy--;
       break;
   }
 }
 
 void editorProcessKeypress() {
-  char c = editorReadKey();
+  int c = editorReadKey();
 
   switch (c) {
     case CTRL_KEY('q'):
@@ -172,10 +200,10 @@ void editorProcessKeypress() {
       exit(0);
       break;
 
-    case 'a':
-    case 's':
-    case 'd':
-    case 'w':
+    case ARROW_LEFT:
+    case ARROW_DOWN:
+    case ARROW_RIGHT:
+    case ARROW_UP:
       editorMoveCursor(c);
       break;
   }
